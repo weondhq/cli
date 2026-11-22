@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            bin: weoc
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            bin: weoc
+          - os: macos-14
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            bin: weoc
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            bin: weoc
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            bin: weoc.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -C target/${{ matrix.target }}/release -czf "dist/weoc-${{ matrix.target }}.tar.gz" "${{ matrix.bin }}"
+
+      - name: Package (Windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "target\${{ matrix.target }}\release\${{ matrix.bin }}" -DestinationPath "dist\weoc-${{ matrix.target }}.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: weoc-${{ matrix.target }}
+          path: dist/*
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate SHA-256 checksums
+        working-directory: artifacts
+        run: sha256sum weoc-* > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true

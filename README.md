@@ -4,7 +4,25 @@ Official Rust command-line interface for [Weond](https://weond.com). Authenticat
 
 ## Installation
 
+### macOS & Linux (Recommended)
+
+```bash
+curl -fsSL https://weond.com/cli | sh
+```
+
+### Windows (PowerShell)
+
+```powershell
+irm https://weond.com/cli.ps1 | iex
+```
+
 ### Build from source (Rust 1.85+)
+
+```bash
+cargo install --git https://github.com/weondhq/cli.git
+```
+
+Or clone directly:
 
 ```bash
 git clone https://github.com/weondhq/cli.git
