@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Zeroize)]
 #[zeroize(drop)]
@@ -39,7 +39,8 @@ pub fn save_token_at(path: &Path, token: &StoredToken) -> Result<()> {
             .with_context(|| format!("failed to set 0700 permissions on {}", dir.display()))?;
     }
 
-    let payload = serde_json::to_vec_pretty(token).context("failed to serialize token")?;
+    let payload =
+        Zeroizing::new(serde_json::to_vec_pretty(token).context("failed to serialize token")?);
 
     let mut opts = OpenOptions::new();
     opts.write(true).create(true).truncate(true);
@@ -73,8 +74,9 @@ pub fn load_token() -> Result<StoredToken> {
 }
 
 pub fn load_token_from(path: &Path) -> Result<StoredToken> {
-    let raw =
-        fs::read(path).with_context(|| format!("credentials not found at {}", path.display()))?;
+    let raw = Zeroizing::new(
+        fs::read(path).with_context(|| format!("credentials not found at {}", path.display()))?,
+    );
     let token: StoredToken =
         serde_json::from_slice(&raw).context("stored credentials file is malformed")?;
     if token.access_token.trim().is_empty() {

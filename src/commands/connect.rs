@@ -147,8 +147,8 @@ fn open_browser(raw_url: &str, api_base: &str, verbose: bool) {
 fn poll_for_token(ctx: &Context, device: &DeviceCodeResponse) -> Result<StoredToken> {
     let endpoint = format!("{}/api/cli/device/token", ctx.api_base);
     let client = build_client(Duration::from_secs(10))?;
-    let mut interval = Duration::from_secs(device.interval.max(5));
-    let deadline = Instant::now() + Duration::from_secs(device.expires_in.max(60));
+    let mut interval = Duration::from_secs(device.interval.clamp(5, 60));
+    let deadline = Instant::now() + Duration::from_secs(device.expires_in.clamp(60, 3600));
 
     loop {
         thread::sleep(interval);
@@ -181,7 +181,7 @@ fn poll_for_token(ctx: &Context, device: &DeviceCodeResponse) -> Result<StoredTo
             match parsed.error.as_str() {
                 "authorization_pending" => continue,
                 "slow_down" => {
-                    interval += Duration::from_secs(5);
+                    interval = (interval + Duration::from_secs(5)).min(Duration::from_secs(60));
                     continue;
                 }
                 "expired_token" => {

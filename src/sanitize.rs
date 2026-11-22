@@ -87,9 +87,14 @@ pub fn is_safe_browser_url(raw: &str, api_base: &str) -> bool {
     };
 
     let is_loopback = matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]");
+    let api_is_loopback = Url::parse(api_base)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_ascii_lowercase()))
+        .is_some_and(|h| matches!(h.as_str(), "localhost" | "127.0.0.1" | "::1" | "[::1]"));
+
     match parsed.scheme() {
         "https" => {}
-        "http" if is_loopback => return true,
+        "http" if is_loopback && api_is_loopback => return true,
         _ => return false,
     }
 
@@ -134,6 +139,10 @@ mod tests {
             api
         ));
         assert!(is_safe_browser_url(
+            "http://localhost:5173/cli/connect",
+            "http://localhost:3000"
+        ));
+        assert!(!is_safe_browser_url(
             "http://localhost:5173/cli/connect",
             api
         ));
