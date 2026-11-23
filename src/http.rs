@@ -57,16 +57,25 @@ pub fn read_bounded_body(resp: Response) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Emits a verbose diagnostic line to stderr without touching stdout.
+pub fn verbose_log(verbose: bool, message: &str) {
+    if verbose {
+        eprintln!("[verbose] {message}");
+    }
+}
+
 /// Executes an authenticated GraphQL request against POST /req using a Bearer CLI token.
 pub fn graphql_request(
     api_base: &str,
     access_token: &str,
+    verbose: bool,
     operation_name: &str,
     query: &str,
     variables: serde_json::Value,
 ) -> Result<serde_json::Value> {
     let client = build_client(Duration::from_secs(30))?;
     let endpoint = format!("{api_base}/req");
+    verbose_log(verbose, &format!("POST {endpoint} ({operation_name})"));
     let payload = serde_json::json!({
         "operationName": operation_name,
         "query": query,
@@ -80,9 +89,13 @@ pub fn graphql_request(
         .context("failed to contact control plane API")?;
 
     let status = resp.status();
+    verbose_log(
+        verbose,
+        &format!("POST {endpoint} -> HTTP {}", status.as_u16()),
+    );
     let body = read_bounded_body(resp)?;
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        bail!("session token is invalid or expired; run 'weoc connect' again");
+        bail!("session token is invalid or expired; run 'weoc connect' or check WEOND_TOKEN");
     }
 
     let parsed: serde_json::Value = serde_json::from_slice(&body)
@@ -93,6 +106,14 @@ pub fn graphql_request(
         .and_then(|e| e.as_array())
         .and_then(|arr| arr.first())
         .and_then(|first| first.get("message"))
+        .and_then(|m| m.as_str())
+    {
+        bail!("{}", crate::sanitize::sanitize_terminal_text(err_msg));
+    }
+
+    if let Some(err_msg) = parsed
+        .get("error")
+        .and_then(|e| e.get("message"))
         .and_then(|m| m.as_str())
     {
         bail!("{}", crate::sanitize::sanitize_terminal_text(err_msg));
@@ -129,5 +150,63 @@ mod tests {
         assert!(validate_api_base_url("http://api.weond.com").is_err());
         assert!(validate_api_base_url("https://user:pass@api.weond.com").is_err());
         assert!(validate_api_base_url("ftp://api.weond.com").is_err());
+    }
+
+    #[test]
+    fn graphql_request_extracts_rest_error_and_sanitizes_graphql_errors() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            for idx in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let (status_line, body) = if idx == 0 {
+                    (
+                        "HTTP/1.1 403 Forbidden",
+                        r#"{"error":{"code":"forbidden","message":"Role\u001b[31m denied"}}"#,
+                    )
+                } else {
+                    (
+                        "HTTP/1.1 200 OK",
+                        r#"{"errors":[{"message":"bad\u001b[2J input"}]}"#,
+                    )
+                };
+                let resp = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(resp.as_bytes()).unwrap();
+            }
+        });
+
+        let api_base = format!("http://{addr}");
+        let err1 = graphql_request(
+            &api_base,
+            "tok",
+            false,
+            "Op1",
+            "query { x }",
+            serde_json::json!({}),
+        )
+        .unwrap_err();
+        assert_eq!(err1.to_string(), "Role denied");
+
+        let err2 = graphql_request(
+            &api_base,
+            "tok",
+            false,
+            "Op2",
+            "query { y }",
+            serde_json::json!({}),
+        )
+        .unwrap_err();
+        assert_eq!(err2.to_string(), "bad input");
+
+        handle.join().unwrap();
     }
 }

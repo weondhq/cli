@@ -9,7 +9,8 @@ pub mod projects;
 pub mod rollback;
 pub mod whoami;
 
-use crate::http::{build_client, read_bounded_body};
+use crate::config::{ResolvedAuth, TokenSource, resolve_token_from};
+use crate::http::{build_client, read_bounded_body, verbose_log};
 use anyhow::{Context as _, Result, bail};
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -19,6 +20,14 @@ use std::time::Duration;
 pub struct Context {
     pub api_base: String,
     pub verbose: bool,
+    pub token_override: Option<String>,
+    pub token_source_hint: Option<TokenSource>,
+}
+
+impl Context {
+    pub fn resolve_auth(&self) -> Result<ResolvedAuth> {
+        resolve_token_from(self.token_override.as_deref(), self.token_source_hint, None)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -56,6 +65,7 @@ pub fn resolve_project(
     };
 
     let endpoint = format!("{}/api/projects", ctx.api_base);
+    verbose_log(ctx.verbose, &format!("GET {endpoint}"));
     let client = build_client(Duration::from_secs(20))?;
     let resp = client
         .get(&endpoint)
@@ -64,9 +74,13 @@ pub fn resolve_project(
         .context("failed to list projects")?;
 
     let status = resp.status();
+    verbose_log(
+        ctx.verbose,
+        &format!("GET {endpoint} -> HTTP {}", status.as_u16()),
+    );
     let body = read_bounded_body(resp)?;
     if status == StatusCode::UNAUTHORIZED {
-        bail!("session token is invalid or expired; run 'weoc connect' again");
+        bail!("session token is invalid or expired; run 'weoc connect' or check WEOND_TOKEN");
     }
     if status != StatusCode::OK {
         bail!("failed to load projects (HTTP {})", status.as_u16());

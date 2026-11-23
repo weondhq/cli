@@ -7,8 +7,9 @@ mod http;
 mod sanitize;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, parser::ValueSource};
 use cli::{Cli, Command, DomainsCommand, EnvCommand, ProjectsCommand};
+use config::TokenSource;
 
 fn main() {
     if let Err(err) = run() {
@@ -18,15 +19,23 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let args = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let token_source_hint = match matches.value_source("token") {
+        Some(ValueSource::CommandLine) => Some(TokenSource::CliFlag),
+        Some(ValueSource::EnvVariable) => Some(TokenSource::EnvVar),
+        _ => None,
+    };
+    let args = Cli::from_arg_matches(&matches)?;
     let api_base = http::validate_api_base_url(&args.api)?;
     let ctx = commands::Context {
         api_base,
         verbose: args.verbose,
+        token_override: args.token,
+        token_source_hint,
     };
 
     match args.command {
-        Command::Connect => commands::connect::run(&ctx),
+        Command::Connect { token_stdin } => commands::connect::run(&ctx, token_stdin),
         Command::Whoami => commands::whoami::run(&ctx),
         Command::Projects { command } => match command {
             ProjectsCommand::List => commands::projects::run_list(&ctx),
@@ -38,14 +47,17 @@ fn run() -> Result<()> {
             project,
         } => commands::rollback::run(&ctx, &deployment_id, project.as_deref()),
         Command::Env { command } => match command {
-            EnvCommand::List { project } => commands::env::run_list(&ctx, project.as_deref()),
+            EnvCommand::List { project, env } => {
+                commands::env::run_list(&ctx, project.as_deref(), env)
+            }
             EnvCommand::Set {
                 key,
                 value,
                 project,
-            } => commands::env::run_set(&ctx, &key, &value, project.as_deref()),
-            EnvCommand::Rm { key, project } => {
-                commands::env::run_rm(&ctx, &key, project.as_deref())
+                env,
+            } => commands::env::run_set(&ctx, &key, &value, project.as_deref(), env),
+            EnvCommand::Rm { key, project, env } => {
+                commands::env::run_rm(&ctx, &key, project.as_deref(), env)
             }
         },
         Command::Domains { command } => match command {

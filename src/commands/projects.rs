@@ -1,6 +1,5 @@
 use crate::commands::Context;
-use crate::config::load_token;
-use crate::http::{build_client, read_bounded_body};
+use crate::http::{build_client, read_bounded_body, verbose_log};
 use crate::sanitize::sanitize_terminal_text;
 use anyhow::{Context as _, Result, bail};
 use reqwest::StatusCode;
@@ -36,20 +35,25 @@ struct ProjectsData {
 }
 
 pub fn run_list(ctx: &Context) -> Result<()> {
-    let token = load_token().context("connect your account first with 'weoc connect'")?;
+    let auth = ctx.resolve_auth()?;
     let endpoint = format!("{}/api/projects", ctx.api_base);
+    verbose_log(ctx.verbose, &format!("GET {endpoint}"));
     let client = build_client(Duration::from_secs(15))?;
     let resp = client
         .get(&endpoint)
-        .bearer_auth(&token.access_token)
+        .bearer_auth(auth.access_token.as_str())
         .send()
         .context("failed to list projects")?;
 
     let status = resp.status();
+    verbose_log(
+        ctx.verbose,
+        &format!("GET {endpoint} -> HTTP {}", status.as_u16()),
+    );
     let body = read_bounded_body(resp)?;
 
     if status == StatusCode::UNAUTHORIZED {
-        bail!("session token is invalid or expired; run 'weoc connect' again");
+        bail!("session token is invalid or expired; run 'weoc connect' or check WEOND_TOKEN");
     }
     if status != StatusCode::OK {
         bail!(

@@ -1,19 +1,19 @@
 use crate::commands::{Context, resolve_project};
-use crate::config::load_token;
 use crate::http::graphql_request;
 use crate::sanitize::sanitize_terminal_text;
 use anyhow::{Context as _, Result, bail};
 use serde_json::json;
 
 pub fn run_list(ctx: &Context, project_slug: Option<&str>) -> Result<()> {
-    let token = load_token().context("connect your account first with 'weoc connect'")?;
-    let project = resolve_project(ctx, &token.access_token, project_slug)?;
+    let auth = ctx.resolve_auth()?;
+    let project = resolve_project(ctx, auth.access_token.as_str(), project_slug)?;
 
     let data = graphql_request(
         &ctx.api_base,
-        &token.access_token,
+        auth.access_token.as_str(),
+        ctx.verbose,
         "WorkspaceCatalog",
-        "query WorkspaceCatalog($workspaceId: UUID) { catalog(workspaceId: $workspaceId) { domains { id projectId hostname status sslStatus cnameTarget } } }",
+        "query WorkspaceCatalog($workspaceId: UUID) { catalog(workspaceId: $workspaceId) { domains { id projectId hostname status sslStatus } } }",
         json!({ "workspaceId": project.workspace_id }),
     )?;
 
@@ -37,12 +37,21 @@ pub fn run_list(ctx: &Context, project_slug: Option<&str>) -> Result<()> {
         return Ok(());
     }
 
-    println!("Custom domains for '{}':", sanitize_terminal_text(&project.slug));
+    println!(
+        "Custom domains for '{}':",
+        sanitize_terminal_text(&project.slug)
+    );
     for d in matched {
         let id = d.get("id").and_then(|v| v.as_str()).unwrap_or("");
         let host = d.get("hostname").and_then(|v| v.as_str()).unwrap_or("");
-        let status = d.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
-        let ssl = d.get("sslStatus").and_then(|v| v.as_str()).unwrap_or("pending");
+        let status = d
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pending");
+        let ssl = d
+            .get("sslStatus")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pending");
         println!(
             "  {:<28}  status={:<10} ssl={:<18} id={}",
             sanitize_terminal_text(host),
@@ -59,12 +68,13 @@ pub fn run_add(ctx: &Context, hostname: &str, project_slug: Option<&str>) -> Res
     if clean_host.is_empty() {
         bail!("hostname cannot be empty");
     }
-    let token = load_token().context("connect your account first with 'weoc connect'")?;
-    let project = resolve_project(ctx, &token.access_token, project_slug)?;
+    let auth = ctx.resolve_auth()?;
+    let project = resolve_project(ctx, auth.access_token.as_str(), project_slug)?;
 
     let data = graphql_request(
         &ctx.api_base,
-        &token.access_token,
+        auth.access_token.as_str(),
+        ctx.verbose,
         "AddDomain",
         "mutation AddDomain($workspaceId: UUID!, $projectId: UUID, $hostname: String!, $environment: String) { addDomain(workspaceId: $workspaceId, projectId: $projectId, hostname: $hostname, environment: $environment) { id hostname status cname { name value } verification { type name value } } }",
         json!({
@@ -75,7 +85,9 @@ pub fn run_add(ctx: &Context, hostname: &str, project_slug: Option<&str>) -> Res
         }),
     )?;
 
-    let added = data.get("addDomain").context("missing addDomain response")?;
+    let added = data
+        .get("addDomain")
+        .context("missing addDomain response")?;
     let id = added.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let cname = added
         .get("cname")
@@ -104,7 +116,10 @@ pub fn run_add(ctx: &Context, hostname: &str, project_slug: Option<&str>) -> Res
             sanitize_terminal_text(vval)
         );
     }
-    println!("\nVerify once DNS propagates: weoc domains verify {}", sanitize_terminal_text(id));
+    println!(
+        "\nVerify once DNS propagates: weoc domains verify {}",
+        sanitize_terminal_text(id)
+    );
     Ok(())
 }
 
@@ -113,23 +128,41 @@ pub fn run_verify(ctx: &Context, domain_id: &str) -> Result<()> {
     if clean_id.is_empty() {
         bail!("domain ID cannot be empty");
     }
-    let token = load_token().context("connect your account first with 'weoc connect'")?;
+    let auth = ctx.resolve_auth()?;
 
     let data = graphql_request(
         &ctx.api_base,
-        &token.access_token,
+        auth.access_token.as_str(),
+        ctx.verbose,
         "VerifyDomain",
         "mutation VerifyDomain($id: UUID!) { verifyDomain(id: $id) { hostname status sslStatus lastError } }",
         json!({ "id": clean_id }),
     )?;
 
-    let verified = data.get("verifyDomain").context("missing verifyDomain response")?;
-    let host = verified.get("hostname").and_then(|v| v.as_str()).unwrap_or(clean_id);
-    let status = verified.get("status").and_then(|v| v.as_str()).unwrap_or("pending");
-    let ssl = verified.get("sslStatus").and_then(|v| v.as_str()).unwrap_or("pending");
-    let last_err = verified.get("lastError").and_then(|v| v.as_str()).unwrap_or("");
+    let verified = data
+        .get("verifyDomain")
+        .context("missing verifyDomain response")?;
+    let host = verified
+        .get("hostname")
+        .and_then(|v| v.as_str())
+        .unwrap_or(clean_id);
+    let status = verified
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pending");
+    let ssl = verified
+        .get("sslStatus")
+        .and_then(|v| v.as_str())
+        .unwrap_or("pending");
+    let last_err = verified
+        .get("lastError")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
-    println!("Domain verification result for '{}':", sanitize_terminal_text(host));
+    println!(
+        "Domain verification result for '{}':",
+        sanitize_terminal_text(host)
+    );
     println!("  Status: {}", sanitize_terminal_text(status));
     println!("  SSL:    {}", sanitize_terminal_text(ssl));
     if !last_err.is_empty() {

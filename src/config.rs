@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -9,10 +9,67 @@ use zeroize::{Zeroize, Zeroizing};
 #[zeroize(drop)]
 pub struct StoredToken {
     pub access_token: String,
+    #[serde(default = "default_token_type")]
     pub token_type: String,
+    #[serde(default)]
     pub expires_in: i64,
     #[serde(default)]
     pub refresh_token: String,
+}
+
+fn default_token_type() -> String {
+    "Bearer".to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenSource {
+    CliFlag,
+    EnvVar,
+    StoredFile,
+}
+
+impl TokenSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CliFlag => "flag: --token",
+            Self::EnvVar => "env: WEOND_TOKEN",
+            Self::StoredFile => "config: token.json",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedAuth {
+    pub access_token: Zeroizing<String>,
+    pub source: TokenSource,
+}
+
+pub fn resolve_token_from(
+    override_token: Option<&str>,
+    source_hint: Option<TokenSource>,
+    token_path: Option<&Path>,
+) -> Result<ResolvedAuth> {
+    if let Some(raw) = override_token {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            bail!("provided API token is empty");
+        }
+        return Ok(ResolvedAuth {
+            access_token: Zeroizing::new(trimmed.to_string()),
+            source: source_hint.unwrap_or(TokenSource::EnvVar),
+        });
+    }
+
+    let stored = match token_path {
+        Some(p) => load_token_from(p),
+        None => load_token(),
+    }
+    .context("not authenticated; run 'weoc connect' or set WEOND_TOKEN / --token")?;
+
+    Ok(ResolvedAuth {
+        access_token: Zeroizing::new(stored.access_token.clone()),
+        source: TokenSource::StoredFile,
+    })
 }
 
 pub fn token_file_path() -> Result<PathBuf> {
@@ -127,5 +184,49 @@ mod tests {
         let loaded = load_token_from(&path).unwrap();
         assert_eq!(loaded.access_token, tok.access_token);
         assert_eq!(loaded.token_type, "Bearer");
+    }
+
+    #[test]
+    fn stored_token_uses_serde_defaults_for_missing_fields() {
+        let minimal = r#"{"access_token":"pat_minimal_123456"}"#;
+        let parsed: StoredToken = serde_json::from_str(minimal).unwrap();
+        assert_eq!(parsed.access_token, "pat_minimal_123456");
+        assert_eq!(parsed.token_type, "Bearer");
+        assert_eq!(parsed.expires_in, 0);
+        assert_eq!(parsed.refresh_token, "");
+    }
+
+    #[test]
+    fn resolve_token_prefers_override_over_stored_file_without_persisting() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("weoc").join("token.json");
+        let tok = StoredToken {
+            access_token: "stored_file_token".into(),
+            token_type: "Bearer".into(),
+            expires_in: 60,
+            refresh_token: String::new(),
+        };
+        save_token_at(&path, &tok).unwrap();
+
+        let from_override = resolve_token_from(
+            Some("pat_override_999"),
+            Some(TokenSource::EnvVar),
+            Some(&path),
+        )
+        .unwrap();
+        assert_eq!(from_override.access_token.as_str(), "pat_override_999");
+        assert_eq!(from_override.source, TokenSource::EnvVar);
+
+        // Stored file must remain untouched.
+        let reloaded = load_token_from(&path).unwrap();
+        assert_eq!(reloaded.access_token, "stored_file_token");
+
+        // Fallback to stored file when override is None.
+        let from_file = resolve_token_from(None, None, Some(&path)).unwrap();
+        assert_eq!(from_file.access_token.as_str(), "stored_file_token");
+        assert_eq!(from_file.source, TokenSource::StoredFile);
+
+        // Empty override must fail rather than falling back silently.
+        assert!(resolve_token_from(Some("   "), Some(TokenSource::CliFlag), Some(&path)).is_err());
     }
 }

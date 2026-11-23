@@ -1,10 +1,9 @@
 use crate::commands::{Context, resolve_project};
-use crate::config::load_token;
 use crate::sanitize::sanitize_terminal_text;
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const LINK_FILE_NAME: &str = ".weond.json";
 
@@ -23,18 +22,32 @@ fn link_file_path() -> Result<PathBuf> {
 
 pub fn load_linked_slug() -> Result<Option<String>> {
     let path = link_file_path()?;
+    load_linked_slug_from(&path)
+}
+
+pub fn load_linked_slug_from(path: &Path) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let parsed: LinkFile =
-        serde_json::from_str(&raw).with_context(|| format!("invalid JSON in {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let parsed: LinkFile = serde_json::from_str(&raw)
+        .with_context(|| format!("invalid JSON in {}", path.display()))?;
     let slug = parsed.project_slug.trim().to_string();
     if slug.is_empty() {
         return Ok(None);
     }
     Ok(Some(slug))
+}
+
+pub fn save_link_file_at(path: &Path, project_slug: &str, project_id: &str) -> Result<()> {
+    let link = LinkFile {
+        project_slug: project_slug.to_string(),
+        project_id: Some(project_id.to_string()),
+    };
+    let content = serde_json::to_string_pretty(&link)?;
+    fs::write(path, format!("{content}\n"))
+        .with_context(|| format!("failed to write {}", path.display()))
 }
 
 pub fn run(ctx: &Context, slug: &str) -> Result<()> {
@@ -43,17 +56,11 @@ pub fn run(ctx: &Context, slug: &str) -> Result<()> {
         bail!("project slug cannot be empty");
     }
 
-    let token = load_token().context("connect your account first with 'weoc connect'")?;
-    let project = resolve_project(ctx, &token.access_token, Some(clean_slug))?;
+    let auth = ctx.resolve_auth()?;
+    let project = resolve_project(ctx, auth.access_token.as_str(), Some(clean_slug))?;
 
-    let link = LinkFile {
-        project_slug: project.slug.clone(),
-        project_id: Some(project.id.clone()),
-    };
     let path = link_file_path()?;
-    let content = serde_json::to_string_pretty(&link)?;
-    fs::write(&path, format!("{content}\n"))
-        .with_context(|| format!("failed to write {}", path.display()))?;
+    save_link_file_at(&path, &project.slug, &project.id)?;
 
     println!(
         "Linked directory to project '{}' ({}) in {}",
@@ -62,4 +69,23 @@ pub fn run(ctx: &Context, slug: &str) -> Result<()> {
         LINK_FILE_NAME
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn saves_and_loads_link_file() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join(LINK_FILE_NAME);
+        assert_eq!(load_linked_slug_from(&path).unwrap(), None);
+
+        save_link_file_at(&path, "my-app", "proj-123").unwrap();
+        assert_eq!(
+            load_linked_slug_from(&path).unwrap().as_deref(),
+            Some("my-app")
+        );
+    }
 }

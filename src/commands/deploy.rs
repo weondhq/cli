@@ -1,6 +1,5 @@
 use crate::commands::Context;
-use crate::config::load_token;
-use crate::http::{build_client, read_bounded_body};
+use crate::http::{build_client, read_bounded_body, verbose_log};
 use crate::sanitize::sanitize_terminal_text;
 use anyhow::{Context as _, Result, bail};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -37,22 +36,27 @@ pub fn run(ctx: &Context, slug: Option<&str>) -> Result<()> {
     };
     let trimmed_slug = resolved_slug.as_str();
 
-    let token = load_token().context("connect your account first with 'weoc connect'")?;
+    let auth = ctx.resolve_auth()?;
     let encoded_slug = utf8_percent_encode(trimmed_slug, NON_ALPHANUMERIC).to_string();
     let endpoint = format!("{}/api/projects/{encoded_slug}/deploy", ctx.api_base);
+    verbose_log(ctx.verbose, &format!("POST {endpoint}"));
 
     let client = build_client(Duration::from_secs(30))?;
     let resp = client
         .post(&endpoint)
-        .bearer_auth(&token.access_token)
+        .bearer_auth(auth.access_token.as_str())
         .send()
         .context("failed to trigger deployment")?;
 
     let status = resp.status();
+    verbose_log(
+        ctx.verbose,
+        &format!("POST {endpoint} -> HTTP {}", status.as_u16()),
+    );
     let body = read_bounded_body(resp)?;
 
     if status == StatusCode::UNAUTHORIZED {
-        bail!("session token is invalid or expired; run 'weoc connect' again");
+        bail!("session token is invalid or expired; run 'weoc connect' or check WEOND_TOKEN");
     }
     if status != StatusCode::OK && status != StatusCode::CREATED {
         bail!(

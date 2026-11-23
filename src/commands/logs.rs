@@ -1,6 +1,5 @@
 use crate::commands::Context;
-use crate::config::load_token;
-use crate::http::{build_client, read_bounded_body};
+use crate::http::{build_client, read_bounded_body, verbose_log};
 use crate::sanitize::sanitize_terminal_text;
 use anyhow::{Context as _, Result, bail};
 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
@@ -39,25 +38,30 @@ pub fn run(ctx: &Context, deployment_id: &str, follow: bool, limit: u16) -> Resu
         bail!("deployment ID cannot be empty");
     }
 
-    let token = load_token().context("connect your account first with 'weoc connect'")?;
+    let auth = ctx.resolve_auth()?;
     let encoded_id = utf8_percent_encode(trimmed_id, NON_ALPHANUMERIC).to_string();
     let endpoint = format!(
         "{}/api/deployments/{encoded_id}/logs?limit={limit}",
         ctx.api_base
     );
+    verbose_log(ctx.verbose, &format!("GET {endpoint}"));
 
     let client = build_client(Duration::from_secs(15))?;
     let resp = client
         .get(&endpoint)
-        .bearer_auth(&token.access_token)
+        .bearer_auth(auth.access_token.as_str())
         .send()
         .context("failed to fetch deployment logs")?;
 
     let status = resp.status();
+    verbose_log(
+        ctx.verbose,
+        &format!("GET {endpoint} -> HTTP {}", status.as_u16()),
+    );
     let body = read_bounded_body(resp)?;
 
     if status == StatusCode::UNAUTHORIZED {
-        bail!("session token is invalid or expired; run 'weoc connect' again");
+        bail!("session token is invalid or expired; run 'weoc connect' or check WEOND_TOKEN");
     }
     if status != StatusCode::OK {
         bail!(
@@ -76,6 +80,14 @@ pub fn run(ctx: &Context, deployment_id: &str, follow: bool, limit: u16) -> Resu
         print_log_line(entry);
     }
 
+    if result.data.logs.is_empty() && !follow {
+        println!(
+            "No logs found for deployment '{}'.",
+            sanitize_terminal_text(trimmed_id)
+        );
+        return Ok(());
+    }
+
     if follow {
         println!("\nStreaming live logs... (Press Ctrl+C to exit)");
         let poll_client = build_client(Duration::from_secs(10))?;
@@ -89,15 +101,25 @@ pub fn run(ctx: &Context, deployment_id: &str, follow: bool, limit: u16) -> Resu
 
             let Ok(poll_resp) = poll_client
                 .get(&poll_url)
-                .bearer_auth(&token.access_token)
+                .bearer_auth(auth.access_token.as_str())
                 .send()
             else {
                 continue;
             };
-            if poll_resp.status() == StatusCode::UNAUTHORIZED {
+            let poll_status = poll_resp.status();
+            if poll_status == StatusCode::UNAUTHORIZED {
                 bail!("session token expired while streaming logs");
             }
-            if poll_resp.status() != StatusCode::OK {
+            if poll_status == StatusCode::FORBIDDEN {
+                bail!("permission denied while streaming logs (HTTP 403)");
+            }
+            if poll_status == StatusCode::NOT_FOUND {
+                bail!(
+                    "deployment '{}' not found while streaming logs (HTTP 404)",
+                    sanitize_terminal_text(trimmed_id)
+                );
+            }
+            if poll_status != StatusCode::OK {
                 continue;
             }
             let Ok(poll_body) = read_bounded_body(poll_resp) else {

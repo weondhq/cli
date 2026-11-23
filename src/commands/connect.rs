@@ -1,13 +1,15 @@
 use crate::commands::Context;
-use crate::config::{StoredToken, save_token};
-use crate::http::{build_client, read_bounded_body};
+use crate::config::{StoredToken, TokenSource, save_token};
+use crate::http::{build_client, read_bounded_body, verbose_log};
 use crate::sanitize::{is_safe_browser_url, mask_access_token, sanitize_terminal_text};
 use anyhow::{Context as _, Result, bail};
 use reqwest::StatusCode;
 use serde::Deserialize;
+use std::io::Read;
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+use zeroize::Zeroizing;
 
 #[derive(Debug, Deserialize)]
 struct DeviceCodeResponse {
@@ -31,7 +33,40 @@ struct TokenErrorBody {
     error: String,
 }
 
-pub fn run(ctx: &Context) -> Result<()> {
+#[derive(Debug, Default, Deserialize)]
+struct MeVerifyData {
+    #[serde(default)]
+    authenticated: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MeVerifyResponse {
+    #[serde(default)]
+    authenticated: bool,
+    #[serde(default)]
+    data: Option<MeVerifyData>,
+}
+
+pub fn run(ctx: &Context, token_stdin: bool) -> Result<()> {
+    if token_stdin {
+        if ctx.token_source_hint == Some(TokenSource::CliFlag) {
+            bail!("cannot use both --token and --token-stdin");
+        }
+        let mut raw = Zeroizing::new(String::new());
+        std::io::stdin()
+            .read_to_string(&mut raw)
+            .context("failed to read token from stdin")?;
+        return connect_with_token(ctx, raw.trim());
+    }
+
+    if ctx.token_source_hint == Some(TokenSource::CliFlag) {
+        let raw = ctx
+            .token_override
+            .as_deref()
+            .context("missing token value for --token")?;
+        return connect_with_token(ctx, raw.trim());
+    }
+
     println!("Starting Weond CLI connection...");
     let device = request_device_code(ctx)?;
     let verification_url = if device.verification_url_complete.trim().is_empty() {
@@ -54,6 +89,58 @@ pub fn run(ctx: &Context) -> Result<()> {
         sanitize_terminal_text(&token.token_type)
     );
     println!("  Expires in:   {}s", token.expires_in);
+    Ok(())
+}
+
+fn connect_with_token(ctx: &Context, raw_token: &str) -> Result<()> {
+    if raw_token.is_empty() {
+        bail!("provided token cannot be empty");
+    }
+
+    let endpoint = format!("{}/req/auth/me", ctx.api_base);
+    verbose_log(ctx.verbose, &format!("GET {endpoint} (validate token)"));
+    let client = build_client(Duration::from_secs(10))?;
+    let resp = client
+        .get(&endpoint)
+        .bearer_auth(raw_token)
+        .send()
+        .context("failed to validate token against Weond API")?;
+
+    let status = resp.status();
+    verbose_log(
+        ctx.verbose,
+        &format!("GET {endpoint} -> HTTP {}", status.as_u16()),
+    );
+    let body = read_bounded_body(resp)?;
+    if status == StatusCode::UNAUTHORIZED {
+        bail!("provided token was rejected by API (HTTP 401)");
+    }
+    if status != StatusCode::OK {
+        bail!(
+            "token validation failed (HTTP {}): {}",
+            status.as_u16(),
+            sanitize_terminal_text(&String::from_utf8_lossy(&body))
+        );
+    }
+
+    let parsed: MeVerifyResponse =
+        serde_json::from_slice(&body).context("failed to decode token validation response")?;
+    let authenticated =
+        parsed.authenticated || parsed.data.map(|d| d.authenticated).unwrap_or(false);
+    if !authenticated {
+        bail!("provided token is not authenticated");
+    }
+
+    let token = StoredToken {
+        access_token: raw_token.to_string(),
+        token_type: "Bearer".to_string(),
+        expires_in: 0,
+        refresh_token: String::new(),
+    };
+    save_token(&token)?;
+
+    println!("Connected successfully using API token.");
+    println!("  Access token: {}", mask_access_token(&token.access_token));
     Ok(())
 }
 

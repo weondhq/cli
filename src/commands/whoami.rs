@@ -1,6 +1,5 @@
 use crate::commands::Context;
-use crate::config::load_token;
-use crate::http::{build_client, read_bounded_body};
+use crate::http::{build_client, read_bounded_body, verbose_log};
 use crate::sanitize::sanitize_terminal_text;
 use anyhow::{Context as _, Result, bail};
 use reqwest::StatusCode;
@@ -41,29 +40,37 @@ struct MeResponse {
 }
 
 pub fn run(ctx: &Context) -> Result<()> {
-    let token = match load_token() {
+    let auth = match ctx.resolve_auth() {
         Ok(tok) => tok,
-        Err(_) => {
+        Err(err) => {
+            if ctx.token_override.is_some() {
+                return Err(err);
+            }
             println!("Not connected.");
-            println!("  Run 'weoc connect' to authorize your CLI.");
+            println!("  Run 'weoc connect' or set WEOND_TOKEN / --token.");
             return Ok(());
         }
     };
 
     let endpoint = format!("{}/req/auth/me", ctx.api_base);
+    verbose_log(ctx.verbose, &format!("GET {endpoint}"));
     let client = build_client(Duration::from_secs(10))?;
     let resp = client
         .get(&endpoint)
-        .bearer_auth(&token.access_token)
+        .bearer_auth(auth.access_token.as_str())
         .send()
         .context("failed to contact Weond API")?;
 
     let status = resp.status();
+    verbose_log(
+        ctx.verbose,
+        &format!("GET {endpoint} -> HTTP {}", status.as_u16()),
+    );
     let body = read_bounded_body(resp)?;
 
     if status == StatusCode::UNAUTHORIZED {
         println!("Session token is invalid or expired.");
-        println!("  Run 'weoc connect' to re-authorize.");
+        println!("  Run 'weoc connect' or check WEOND_TOKEN.");
         return Ok(());
     }
     if status != StatusCode::OK {
@@ -86,10 +93,17 @@ pub fn run(ctx: &Context) -> Result<()> {
         return Ok(());
     }
 
+    let provider_display = if user.provider.trim().is_empty() {
+        "API token".to_string()
+    } else {
+        sanitize_terminal_text(&user.provider)
+    };
+
     println!("Connected account:");
     println!("  Name:     {}", sanitize_terminal_text(&user.name));
     println!("  Email:    {}", sanitize_terminal_text(&user.email));
-    println!("  Provider: {}", sanitize_terminal_text(&user.provider));
+    println!("  Provider: {provider_display}");
+    println!("  Source:   {}", auth.source.label());
     println!("  ID:       {}", sanitize_terminal_text(&user.id));
     if !user.avatar_url.is_empty() {
         println!("  Avatar:   {}", sanitize_terminal_text(&user.avatar_url));
