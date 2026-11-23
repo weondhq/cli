@@ -66,22 +66,33 @@ pub fn run_add(ctx: &Context, hostname: &str, project_slug: Option<&str>) -> Res
         &ctx.api_base,
         &token.access_token,
         "AddDomain",
-        "mutation AddDomain($input: AddDomainInput!) { addDomain(input: $input) { id hostname status cnameTarget verificationName verificationValue } }",
+        "mutation AddDomain($workspaceId: UUID!, $projectId: UUID, $hostname: String!, $environment: String) { addDomain(workspaceId: $workspaceId, projectId: $projectId, hostname: $hostname, environment: $environment) { id hostname status cname { name value } verification { type name value } } }",
         json!({
-            "input": {
-                "workspaceId": project.workspace_id,
-                "projectId": project.id,
-                "hostname": clean_host,
-                "environment": "production",
-            }
+            "workspaceId": project.workspace_id,
+            "projectId": project.id,
+            "hostname": clean_host,
+            "environment": "production",
         }),
     )?;
 
     let added = data.get("addDomain").context("missing addDomain response")?;
     let id = added.get("id").and_then(|v| v.as_str()).unwrap_or("");
-    let cname = added.get("cnameTarget").and_then(|v| v.as_str()).unwrap_or("edge.weond.app");
-    let vname = added.get("verificationName").and_then(|v| v.as_str()).unwrap_or("");
-    let vval = added.get("verificationValue").and_then(|v| v.as_str()).unwrap_or("");
+    let cname = added
+        .get("cname")
+        .and_then(|c| c.get("value"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("edge.weond.app");
+    let vname = added
+        .get("verification")
+        .and_then(|v| v.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let vval = added
+        .get("verification")
+        .and_then(|v| v.get("value"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
 
     println!("Added domain '{}'.", sanitize_terminal_text(&clean_host));
     println!("  Domain ID: {}", sanitize_terminal_text(id));
