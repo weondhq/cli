@@ -48,14 +48,23 @@ weoc whoami
 # 3. List workspace projects
 weoc projects list
 
-# 4. Trigger a deployment
-weoc deploy my-app
+# 4. Link current directory to a project (.weond.json)
+weoc link my-app
 
-# 5. View or stream deployment logs
-weoc logs <deployment-id>
+# 5. Trigger a deployment (uses linked project when slug is omitted)
+weoc deploy
+
+# 6. Manage encrypted environment variables & custom domains
+weoc env list
+weoc env set API_URL https://api.example.com
+weoc domains list
+weoc domains add example.com
+
+# 7. View or live-stream deployment logs & roll back
 weoc logs <deployment-id> --follow
+weoc rollback <deployment-id>
 
-# 6. Revoke session and remove local credentials
+# 8. Revoke session and remove local credentials
 weoc disconnect
 ```
 

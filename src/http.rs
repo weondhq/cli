@@ -57,6 +57,57 @@ pub fn read_bounded_body(resp: Response) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// Executes an authenticated GraphQL request against POST /req using a Bearer CLI token.
+pub fn graphql_request(
+    api_base: &str,
+    access_token: &str,
+    operation_name: &str,
+    query: &str,
+    variables: serde_json::Value,
+) -> Result<serde_json::Value> {
+    let client = build_client(Duration::from_secs(30))?;
+    let endpoint = format!("{api_base}/req");
+    let payload = serde_json::json!({
+        "operationName": operation_name,
+        "query": query,
+        "variables": variables,
+    });
+    let resp = client
+        .post(&endpoint)
+        .bearer_auth(access_token)
+        .json(&payload)
+        .send()
+        .context("failed to contact control plane API")?;
+
+    let status = resp.status();
+    let body = read_bounded_body(resp)?;
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        bail!("session token is invalid or expired; run 'weoc connect' again");
+    }
+
+    let parsed: serde_json::Value = serde_json::from_slice(&body)
+        .with_context(|| format!("invalid JSON response (HTTP {})", status.as_u16()))?;
+
+    if let Some(err_msg) = parsed
+        .get("errors")
+        .and_then(|e| e.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("message"))
+        .and_then(|m| m.as_str())
+    {
+        bail!("{}", crate::sanitize::sanitize_terminal_text(err_msg));
+    }
+
+    if !status.is_success() {
+        bail!("request failed (HTTP {})", status.as_u16());
+    }
+
+    parsed
+        .get("data")
+        .cloned()
+        .context("API response missing data field")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -29,11 +29,13 @@ struct DeployProject {
     preview_url: String,
 }
 
-pub fn run(ctx: &Context, slug: &str) -> Result<()> {
-    let trimmed_slug = slug.trim();
-    if trimmed_slug.is_empty() {
-        bail!("project slug cannot be empty");
-    }
+pub fn run(ctx: &Context, slug: Option<&str>) -> Result<()> {
+    let resolved_slug = match slug.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => s.to_string(),
+        None => crate::commands::link::load_linked_slug()?
+            .context("specify a project slug or run 'weoc link <slug>' first")?,
+    };
+    let trimmed_slug = resolved_slug.as_str();
 
     let token = load_token().context("connect your account first with 'weoc connect'")?;
     let encoded_slug = utf8_percent_encode(trimmed_slug, NON_ALPHANUMERIC).to_string();

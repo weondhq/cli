@@ -8,7 +8,7 @@ mod sanitize;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{Cli, Command, ProjectsCommand};
+use cli::{Cli, Command, DomainsCommand, EnvCommand, ProjectsCommand};
 
 fn main() {
     if let Err(err) = run() {
@@ -31,7 +31,32 @@ fn run() -> Result<()> {
         Command::Projects { command } => match command {
             ProjectsCommand::List => commands::projects::run_list(&ctx),
         },
-        Command::Deploy { slug } => commands::deploy::run(&ctx, &slug),
+        Command::Link { slug } => commands::link::run(&ctx, &slug),
+        Command::Deploy { slug } => commands::deploy::run(&ctx, slug.as_deref()),
+        Command::Rollback {
+            deployment_id,
+            project,
+        } => commands::rollback::run(&ctx, &deployment_id, project.as_deref()),
+        Command::Env { command } => match command {
+            EnvCommand::List { project } => commands::env::run_list(&ctx, project.as_deref()),
+            EnvCommand::Set {
+                key,
+                value,
+                project,
+            } => commands::env::run_set(&ctx, &key, &value, project.as_deref()),
+            EnvCommand::Rm { key, project } => {
+                commands::env::run_rm(&ctx, &key, project.as_deref())
+            }
+        },
+        Command::Domains { command } => match command {
+            DomainsCommand::List { project } => {
+                commands::domains::run_list(&ctx, project.as_deref())
+            }
+            DomainsCommand::Add { hostname, project } => {
+                commands::domains::run_add(&ctx, &hostname, project.as_deref())
+            }
+            DomainsCommand::Verify { domain_id } => commands::domains::run_verify(&ctx, &domain_id),
+        },
         Command::Logs {
             deployment_id,
             follow,

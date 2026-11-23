@@ -36,10 +36,38 @@ pub enum Command {
         command: ProjectsCommand,
     },
 
-    /// Trigger a deployment for a project
-    Deploy {
-        /// Project slug to deploy
+    /// Link the current directory to a Weond project (.weond.json)
+    Link {
+        /// Project slug to link
         slug: String,
+    },
+
+    /// Trigger a deployment for a project (uses linked project if slug is omitted)
+    Deploy {
+        /// Project slug to deploy (defaults to linked project in .weond.json)
+        slug: Option<String>,
+    },
+
+    /// Roll back or promote a completed deployment to production
+    Rollback {
+        /// Completed deployment ID to promote
+        deployment_id: String,
+
+        /// Project slug (defaults to linked project in .weond.json)
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+
+    /// Manage project environment variables
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
+
+    /// Manage custom domains
+    Domains {
+        #[command(subcommand)]
+        command: DomainsCommand,
     },
 
     /// View or stream deployment logs
@@ -64,4 +92,55 @@ pub enum Command {
 pub enum ProjectsCommand {
     /// List workspace projects
     List,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EnvCommand {
+    /// List environment variable keys for a project
+    List {
+        /// Project slug (defaults to linked project in .weond.json)
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Set or update an environment variable
+    Set {
+        /// Environment variable key (e.g. API_URL)
+        key: String,
+        /// Environment variable value
+        value: String,
+        /// Project slug (defaults to linked project in .weond.json)
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Remove an environment variable
+    Rm {
+        /// Environment variable key to delete
+        key: String,
+        /// Project slug (defaults to linked project in .weond.json)
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DomainsCommand {
+    /// List domains for a project
+    List {
+        /// Project slug (defaults to linked project in .weond.json)
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Attach a custom domain to a project
+    Add {
+        /// Hostname to attach (e.g. example.com or app.example.com)
+        hostname: String,
+        /// Project slug (defaults to linked project in .weond.json)
+        #[arg(short, long)]
+        project: Option<String>,
+    },
+    /// Trigger DNS and TLS verification for a domain ID
+    Verify {
+        /// Domain ID returned by 'weoc domains list' or 'weoc domains add'
+        domain_id: String,
+    },
 }
